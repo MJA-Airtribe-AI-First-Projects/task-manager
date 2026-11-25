@@ -10,6 +10,7 @@ from rest_framework.response import Response
 
 from .ai import parse_task_text, break_down_task
 from .models import Task
+from .pagination import TaskPagination
 from .serializers import TaskSerializer
 from .utils import error_response, serializer_errors_to_details, check_idempotency, get_request_body, \
     save_idempotency_response
@@ -22,6 +23,17 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     queryset = Task.objects.all()
     serializer_class = TaskSerializer
+    pagination_class = TaskPagination
+
+    # Filtering
+    filterset_fields = ['completed', 'priority']
+
+    # Searching
+    search_fields = ['title', 'description']
+
+    # Ordering
+    ordering_fields = ['created_at']
+    ordering = ('-created_at',)
 
     # def handle_exception(self, exc):
     #     """Normalize DRF validation and not-found errors for every action."""
@@ -437,3 +449,44 @@ class TaskViewSet(viewsets.ModelViewSet):
         save_idempotency_response(key, body, response)
 
         return response
+
+    @action(
+        detail=False,
+        methods=['GET'],
+        url_path=r'priority/(?P<level>[^/.]+)'
+    )
+    def priority(self, request, level=None):
+        """Return paginated tasks matching a valid priority level."""
+
+        valid_levels = [
+            choice[0]
+            for choice in Task.PRIORITY_CHOICES
+        ]
+
+        # Validate priority level
+        if level not in valid_levels:
+            return error_response(
+                "INVALID_PRIORITY",
+                "Invalid priority level",
+                [
+                    {
+                        "field": "priority",
+                        "issue": f"Must be one of: {', '.join(valid_levels)}"
+                    }
+                ],
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        # Filter tasks
+        queryset = self.get_queryset().filter(priority=level)
+
+        # Apply pagination
+        page = self.paginate_queryset(queryset)
+
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+
+        return Response(serializer.data)
