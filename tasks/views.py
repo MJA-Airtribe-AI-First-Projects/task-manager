@@ -11,7 +11,8 @@ from rest_framework.response import Response
 from .ai import parse_task_text, break_down_task
 from .models import Task
 from .serializers import TaskSerializer
-from .utils import error_response, serializer_errors_to_details
+from .utils import error_response, serializer_errors_to_details, check_idempotency, get_request_body, \
+    save_idempotency_response
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class TaskViewSet(viewsets.ModelViewSet):
     # the same error handling could otherwise be centralized in handle_exception.
     @override
     def retrieve(self, request, *args, **kwargs):
+        """Return one task, using the standard error envelope when it is missing."""
 
         try:
             instance = self.get_object()
@@ -66,6 +68,15 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     @override
     def create(self, request, *args, **kwargs):
+        """Validate and create a top-level task, honoring idempotency keys."""
+
+        # Replay a prior result for the same idempotency key before doing any work.
+        cached_response, key = check_idempotency(request)
+
+        if cached_response is not None:
+            return cached_response
+
+        body = get_request_body(request)
 
         if request.data.get("parent") not in (None, ""):
             return error_response(
@@ -95,13 +106,18 @@ class TaskViewSet(viewsets.ModelViewSet):
 
         serializer.save()
 
-        return Response(
+        response = Response(
             serializer.data,
             status=status.HTTP_201_CREATED
         )
 
+        save_idempotency_response(key, body, response)
+
+        return response
+
     @override
     def update(self, request, *args, **kwargs):
+        """Update a task after validating its fields and parent relationship."""
 
         try:
             instance = self.get_object()
@@ -145,6 +161,7 @@ class TaskViewSet(viewsets.ModelViewSet):
             )
 
         parent = serializer.validated_data.get('parent')
+        # Only top-level tasks may own subtasks, so reject parents that are subtasks themselves.
         if parent and parent.parent_id is not None:
             return error_response(
                 "INVALID_OPERATION",
@@ -159,6 +176,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     @override
     def destroy(self, request, *args, **kwargs):
+        """Delete a task and return the standard not-found response if absent."""
 
         try:
             instance = self.get_object()
@@ -182,6 +200,15 @@ class TaskViewSet(viewsets.ModelViewSet):
         url_path='from-text'
     )
     def from_text(self, request):
+        """Parse natural-language text, validate it, and create a task."""
+
+        # Keep retries from parsing and creating the same task more than once.
+        cached_response, key = check_idempotency(request)
+
+        if cached_response is not None:
+            return cached_response
+
+        body = get_request_body(request)
 
         text = request.data.get('text')
 
@@ -231,10 +258,14 @@ class TaskViewSet(viewsets.ModelViewSet):
         # Step 3: Save only after validation
         serializer.save()
 
-        return Response(
+        response = Response(
             serializer.data,
             status=status.HTTP_201_CREATED
         )
+
+        save_idempotency_response(key, body, response)
+
+        return response
 
     # DRF does not allow two actions with the same method and URL path.
     # Therefore, instead of creating two separate methods named subtasks,
@@ -245,6 +276,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         url_path='subtasks'
     )
     def subtasks(self, request, pk=None):
+        """List a task's subtasks or create a new subtask under that task."""
 
         task = self.get_object()
 
@@ -310,6 +342,15 @@ class TaskViewSet(viewsets.ModelViewSet):
         url_path='breakdown'
     )
     def breakdown(self, request, pk=None):
+        """Generate, validate, and atomically create subtasks for a top-level task."""
+
+        # A retry should return the original generated subtasks instead of creating duplicates.
+        cached_response, key = check_idempotency(request)
+
+        if cached_response is not None:
+            return cached_response
+
+        body = get_request_body(request)
 
         task = self.get_object()
 
@@ -325,8 +366,8 @@ class TaskViewSet(viewsets.ModelViewSet):
         # Generate subtask dictionaries
         try:
             subtasks_data = break_down_task(task)
-
-        except Exception:
+        except Exception as e:
+            logger.exception(str(e))
             return error_response(
                 "BREAKDOWN_ERROR",
                 "Unable to break down task",
@@ -367,7 +408,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         # Save all subtasks inside a database transaction
         try:
             with transaction.atomic():
-
+                # Roll back the entire breakdown if any individual save fails.
                 created_subtasks = [
                     serializer.save()
                     for serializer in serializers
@@ -388,7 +429,11 @@ class TaskViewSet(viewsets.ModelViewSet):
             many=True
         )
 
-        return Response(
+        response = Response(
             response_serializer.data,
             status=status.HTTP_201_CREATED
         )
+
+        save_idempotency_response(key, body, response)
+
+        return response

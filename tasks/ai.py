@@ -62,18 +62,18 @@ def parse_task_text(text, today):
 
 
 def break_down_task(task):
-    return [
-        {
-            "title": "Create Serializer",
-            "description": "Create serializer",
-            "parent": task.id
-        },
-        {
-            "title": "",
-            "description": "Invalid subtask",
-            "parent": task.id
-        }
-    ]
+    """Split a task title into subtask data dictionaries.
+
+    The title is divided at the words "and" and commas. Each non-empty part
+    becomes a subtask with the original task's ID as its parent.
+
+    Args:
+        task: Task-like object with ``title`` and ``id`` attributes.
+
+    Returns:
+        list[dict]: Subtask data containing ``title``, ``description``, and
+        ``parent`` fields.
+    """
     title = task.title
 
     # Split using 'and' or commas
