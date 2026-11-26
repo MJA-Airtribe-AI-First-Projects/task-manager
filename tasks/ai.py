@@ -34,9 +34,8 @@ def parse_task_text(text, today):
     # Handle 1st
     if "1st" in text_lower:
 
-        if today.day < 1:
-            due_date = today.replace(day=1)
-
+        if today.day == 1:
+            due_date = today
         else:
             # First day of next month
             if today.month == 12:

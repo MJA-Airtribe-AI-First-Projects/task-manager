@@ -35,6 +35,22 @@ class TaskViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at']
     ordering = ('-created_at',)
 
+    def list(self, request, *args, **kwargs):
+        """List tasks, rejecting completion filters other than true or false."""
+        completed = request.query_params.get('completed')
+        if completed is not None and completed not in ('true', 'false'):
+            return error_response(
+                "VALIDATION_ERROR",
+                "Validation failed",
+                [{
+                    "field": "completed",
+                    "issue": "Must be 'true' or 'false'."
+                }],
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        return super().list(request, *args, **kwargs)
+
     # def handle_exception(self, exc):
     #     """Normalize DRF validation and not-found errors for every action."""
     #     response = super().handle_exception(exc)
